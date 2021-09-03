@@ -1,0 +1,71 @@
+name: Deploy to Chromatic
+description: "This action will deploy the current project to chromatic. \n
+  It assumes chromatic is installed in the package of the repository"
+
+inputs:
+  cache-key:
+    description: Key of the cached dependencies, if unavailable, npm ci will be ran.
+    required: false
+
+runs:
+  using: "composite"
+  steps:
+    - uses: actions/checkout@v2
+      with:
+        fetch-depth: 0
+
+    - name: Install dependencies
+      if: inputs.cache-key != ''
+      uses: actions/cache@v2
+      with:
+        path: node_modules
+        key: ${{ inputs.cache-key }}
+
+    - name: Install dependencies
+      if: inputs.cache == '' || steps.cache.outputs.cache-hit != 'true'
+      run: npm ci
+
+    - name: Deploy to Chromatic
+      id: deploy-to-chromatic
+      uses: chromaui/action@v1
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        projectToken: ${{ secrets.CHROMATIC_TOKEN }}
+        exitZeroOnChanges: true
+
+    - name: Find existing Chromatic comment
+      if: github.event_name == 'pull_request'
+      uses: peter-evans/find-comment@v1
+      id: find-comment
+      with:
+        issue-number: ${{ github.event.pull_request.number }}
+        comment-author: "github-actions[bot]"
+        body-includes: Chromatic
+
+    - name: Delete existing Chromatic comment
+      if: github.event_name == 'pull_request' && steps.find-comment.outputs.comment-id != 0
+      uses: jungwinter/comment@v1
+      with:
+        type: delete
+        comment_id: ${{ steps.find-comment.outputs.comment-id }}
+        token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Extract Storybook URL host
+      if: github.event_name == 'pull_request'
+      id: storybook-url
+      run: |
+        # For some reason the Storybook URL output has an invalid path, so we'll just grab the host
+        STORYBOOK_URL=$(npx -q parse-url-cli --json "${{ steps.deploy-to-chromatic.outputs.storybookUrl }}" | jq -r '.scheme + "://" + .host')
+        echo "::set-output name=storybook-url::${STORYBOOK_URL}"
+
+    - name: Create Chromatic comment
+      if: github.event_name == 'pull_request'
+      uses: peter-evans/create-or-update-comment@v1
+      with:
+        body: |
+          ### Chromatic
+
+          :fire: View your Storybook [here](${{ steps.storybook-url.outputs.storybook-url }})
+
+          :rocket: View build details [here](${{ steps.deploy-to-chromatic.outputs.buildUrl }})
+        issue-number: ${{ github.event.pull_request.number }}
